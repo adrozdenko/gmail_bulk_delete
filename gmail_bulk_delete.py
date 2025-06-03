@@ -626,7 +626,7 @@ class AsyncGmailBulkDeleter:
             filled = int(bar_length * progress / 100)
             bar = "█" * filled + "░" * (bar_length - filled)
             estimated_remaining = max(0, starting_total - self.total_deleted)
-            print(f"   📊 Progress: [{bar}] {progress:.1f}% (~{estimated_remaining} remaining)")
+            print(f"   📊 [{bar}] {progress:.1f}% (~{estimated_remaining} remaining)")
         else:
             print(f"   📊 Processed: {self.total_deleted} emails")
 

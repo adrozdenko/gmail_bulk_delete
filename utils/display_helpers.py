@@ -94,7 +94,7 @@ class ProgressDisplayHelper:
         filled = int(PROGRESS_BAR_WIDTH * progress / 100)
         bar = "█" * filled + "░" * (PROGRESS_BAR_WIDTH - filled)
         remaining = max(0, total - current)
-        print(f"   📊 Progress: [{bar}] {progress:.1f}% (~{remaining} remaining)")
+        print(f"   📊 [{bar}] {progress:.1f}% (~{remaining} remaining)")
     
     @staticmethod
     def print_batch_stats(batch_num: int, email_count: int, 

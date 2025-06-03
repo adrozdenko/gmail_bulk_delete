@@ -112,7 +112,7 @@ MAX_GMAIL_BATCH_SIZE = 100
 MAX_CONCURRENT_REQUESTS = 5
 DEFAULT_RATE_LIMIT_DELAY_MS = 1000
 MAX_EMAILS_PER_OPERATION = 10000
-GMAIL_API_SCOPES = ["https://www.googleapis.com/auth/gmail.modify"]
+GMAIL_API_SCOPES = ["https://www.googleapis.com/auth/gmail"]
 
 # Error types
 class GmailAPIError(Exception):

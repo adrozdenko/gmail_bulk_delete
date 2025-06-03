@@ -18,7 +18,7 @@ from googleapiclient.discovery import build
 from googleapiclient.errors import HttpError
 
 # Gmail API scope for full access
-SCOPES = ['https://www.googleapis.com/auth/gmail.modify']
+SCOPES = ['https://www.googleapis.com/auth/gmail.readonly', 'https://www.googleapis.com/auth/gmail.modify']
 
 @dataclass
 class DeleteCriteria:
@@ -118,11 +118,29 @@ class GmailBulkDeleter:
         print(f"🔍 Search query: {query}")
         
         try:
-            results = self.service.users().messages().list(
-                userId='me', q=query
-            ).execute()
+            # Get ALL messages with pagination
+            messages = []
+            page_token = None
             
-            messages = results.get('messages', [])
+            while True:
+                if page_token:
+                    results = self.service.users().messages().list(
+                        userId='me', q=query, pageToken=page_token
+                    ).execute()
+                else:
+                    results = self.service.users().messages().list(
+                        userId='me', q=query
+                    ).execute()
+                
+                batch_messages = results.get('messages', [])
+                messages.extend(batch_messages)
+                
+                page_token = results.get('nextPageToken')
+                if not page_token:
+                    break
+                    
+                print(f"📧 Found {len(messages)} emails so far...")
+            
             total_count = len(messages)
             
             if total_count == 0:
@@ -193,11 +211,11 @@ class GmailBulkDeleter:
             for i in range(0, len(message_ids), batch_size):
                 batch = message_ids[i:i + batch_size]
                 
-                # Use batchDelete for efficiency
-                self.service.users().messages().batchDelete(
-                    userId='me',
-                    body={'ids': batch}
-                ).execute()
+                # Move to trash instead of permanent deletion (safer and works with current permissions)
+                for message_id in batch:
+                    self.service.users().messages().trash(
+                        userId='me', id=message_id
+                    ).execute()
                 
                 deleted_count += len(batch)
                 print(f"✅ Deleted {deleted_count}/{total_count} emails")

@@ -161,14 +161,6 @@ python -m src.main delete          # Execute cleanup
 
 **[Full troubleshooting guide in USER_GUIDE.md](USER_GUIDE.md#-troubleshooting)**
 
-## 🎉 Success Stories
-
-> *"Cleaned up 10,000+ emails in one afternoon! My Gmail is lightning fast now."*
-
-> *"Love that it kept all my photos safe while removing thousands of old newsletters."*
-
-> *"Finally found emails that actually matter. This tool is a lifesaver!"*
-
 ## ⚠️ Important Notes
 
 - **Emails are moved to trash** (not permanently deleted)

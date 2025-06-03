@@ -25,8 +25,74 @@ MAINTENANCE_INTERVAL = 10
 PERFORMANCE_CHECK_INTERVAL = 30
 PROGRESS_BAR_WIDTH = 40
 
+# Smart Filtering Configuration
+DEFAULT_FILTERS = {
+    "older_than_days": 180,  # 6 months
+    "exclude_attachments": True,
+    "exclude_important": True, 
+    "exclude_starred": True,
+    "min_size_mb": None,  # No size filter by default
+    "max_size_mb": None,
+    "sender_domains": [],  # e.g., ["newsletter.com", "marketing.com"]
+    "sender_emails": [],   # e.g., ["noreply@github.com"]
+    "exclude_senders": [], # Senders to never delete
+    "subject_keywords": [], # Delete emails with these keywords
+    "exclude_labels": ["TRASH", "SPAM"]  # Always exclude these
+}
+
+# Predefined filter presets for common use cases
+FILTER_PRESETS = {
+    "newsletters": {
+        "older_than_days": 30,
+        "exclude_attachments": True,
+        "exclude_important": True,
+        "exclude_starred": True,
+        "subject_keywords": ["newsletter", "unsubscribe", "weekly digest", "monthly update"],
+        "sender_domains": ["mailchimp.com", "constantcontact.com", "sendinblue.com"],
+        "exclude_labels": ["TRASH", "SPAM"]
+    },
+    
+    "github_notifications": {
+        "older_than_days": 7,
+        "exclude_attachments": True,
+        "exclude_important": True,
+        "exclude_starred": True,
+        "sender_emails": ["notifications@github.com", "noreply@github.com"],
+        "subject_keywords": ["[GitHub]", "Pull Request", "Issue"],
+        "exclude_labels": ["TRASH", "SPAM"]
+    },
+    
+    "large_emails": {
+        "older_than_days": 90,
+        "exclude_attachments": False,  # Include emails with attachments for size check
+        "exclude_important": True,
+        "exclude_starred": True,
+        "min_size_mb": 10,  # Emails larger than 10MB
+        "exclude_labels": ["TRASH", "SPAM"]
+    },
+    
+    "social_media": {
+        "older_than_days": 14,
+        "exclude_attachments": True,
+        "exclude_important": True,
+        "exclude_starred": True,
+        "sender_domains": ["facebook.com", "twitter.com", "linkedin.com", "instagram.com"],
+        "subject_keywords": ["notification", "activity", "friend request", "message"],
+        "exclude_labels": ["TRASH", "SPAM"]
+    },
+    
+    "promotional": {
+        "older_than_days": 60,
+        "exclude_attachments": True,
+        "exclude_important": True,
+        "exclude_starred": True,
+        "subject_keywords": ["sale", "discount", "offer", "promo", "deal", "% off"],
+        "exclude_labels": ["TRASH", "SPAM"]
+    }
+}
+
 class AsyncGmailBulkDeleter:
-    def __init__(self):
+    def __init__(self, filters=None):
         self.total_deleted = 0
         self.total_errors = 0
         self.start_time = None
@@ -40,6 +106,12 @@ class AsyncGmailBulkDeleter:
         self.service = None
         self.credentials = None
         self.connection_reuse_count = 0
+        
+        # Smart filtering configuration
+        self.filters = filters if filters else DEFAULT_FILTERS.copy()
+        self.emails_analyzed = 0
+        self.emails_skipped = 0
+        
         self._load_credentials()
         
     def get_memory_usage(self):
@@ -66,6 +138,109 @@ class AsyncGmailBulkDeleter:
             self.connection_reuse_count += 1
             
         return self.service
+
+    def build_smart_query(self):
+        """Build Gmail search query based on smart filters"""
+        query_parts = []
+        
+        # Date filtering
+        if self.filters.get("older_than_days"):
+            from datetime import datetime, timedelta
+            cutoff_date = datetime.now() - timedelta(days=self.filters["older_than_days"])
+            query_parts.append(f'before:{cutoff_date.strftime("%Y/%m/%d")}')
+        
+        # Size filtering
+        if self.filters.get("min_size_mb"):
+            query_parts.append(f'larger:{self.filters["min_size_mb"]}M')
+        if self.filters.get("max_size_mb"):
+            query_parts.append(f'smaller:{self.filters["max_size_mb"]}M')
+        
+        # Sender filtering
+        if self.filters.get("sender_domains"):
+            domain_queries = [f'from:@{domain}' for domain in self.filters["sender_domains"]]
+            if len(domain_queries) == 1:
+                query_parts.append(domain_queries[0])
+            else:
+                query_parts.append(f'({" OR ".join(domain_queries)})')
+        
+        if self.filters.get("sender_emails"):
+            email_queries = [f'from:{email}' for email in self.filters["sender_emails"]]
+            if len(email_queries) == 1:
+                query_parts.append(email_queries[0])
+            else:
+                query_parts.append(f'({" OR ".join(email_queries)})')
+        
+        # Subject keyword filtering
+        if self.filters.get("subject_keywords"):
+            keyword_queries = [f'subject:"{keyword}"' for keyword in self.filters["subject_keywords"]]
+            if len(keyword_queries) == 1:
+                query_parts.append(keyword_queries[0])
+            else:
+                query_parts.append(f'({" OR ".join(keyword_queries)})')
+        
+        # Exclusions
+        if self.filters.get("exclude_attachments", True):
+            query_parts.append('-has:attachment')
+        
+        if self.filters.get("exclude_important", True):
+            query_parts.append('-is:important')
+        
+        if self.filters.get("exclude_starred", True):
+            query_parts.append('-is:starred')
+        
+        if self.filters.get("exclude_senders"):
+            for sender in self.filters["exclude_senders"]:
+                query_parts.append(f'-from:{sender}')
+        
+        if self.filters.get("exclude_labels"):
+            for label in self.filters["exclude_labels"]:
+                query_parts.append(f'-in:{label.lower()}')
+        
+        return ' '.join(query_parts)
+
+    def print_filter_summary(self):
+        """Print summary of active filters"""
+        print("🎯 SMART FILTERING ACTIVE:")
+        
+        if self.filters.get("older_than_days"):
+            print(f"   📅 Age: Older than {self.filters['older_than_days']} days")
+        
+        if self.filters.get("min_size_mb") or self.filters.get("max_size_mb"):
+            size_filter = "   📏 Size: "
+            if self.filters.get("min_size_mb"):
+                size_filter += f"Larger than {self.filters['min_size_mb']}MB"
+            if self.filters.get("max_size_mb"):
+                if self.filters.get("min_size_mb"):
+                    size_filter += f", smaller than {self.filters['max_size_mb']}MB"
+                else:
+                    size_filter += f"Smaller than {self.filters['max_size_mb']}MB"
+            print(size_filter)
+        
+        if self.filters.get("sender_domains"):
+            print(f"   📧 Sender domains: {', '.join(self.filters['sender_domains'])}")
+        
+        if self.filters.get("sender_emails"):
+            print(f"   📧 Sender emails: {', '.join(self.filters['sender_emails'])}")
+        
+        if self.filters.get("subject_keywords"):
+            print(f"   📝 Subject contains: {', '.join(self.filters['subject_keywords'])}")
+        
+        # Exclusions
+        exclusions = []
+        if self.filters.get("exclude_attachments", True):
+            exclusions.append("attachments")
+        if self.filters.get("exclude_important", True):
+            exclusions.append("important")
+        if self.filters.get("exclude_starred", True):
+            exclusions.append("starred")
+        
+        if exclusions:
+            print(f"   🛡️  Excluding: {', '.join(exclusions)}")
+        
+        if self.filters.get("exclude_senders"):
+            print(f"   🚫 Never delete from: {', '.join(self.filters['exclude_senders'])}")
+        
+        print("")
 
     async def delete_email_batch_async(self, message_ids, task_id):
         """Delete a batch of emails using async batch API for maximum performance"""
@@ -181,7 +356,12 @@ class AsyncGmailBulkDeleter:
         print("=" * 60)
         
         service = await self.get_service()
-        query = 'before:2024/12/05 -is:important -is:starred -has:attachment -in:trash -in:spam'
+        query = self.build_smart_query()
+        
+        print(f"📧 Gmail Query: {query}")
+        print("")
+        
+        self.print_filter_summary()
         
         initial_estimate = await self._get_initial_email_count_async(service, query)
         
@@ -450,13 +630,97 @@ class AsyncGmailBulkDeleter:
         else:
             print(f"   📊 Processed: {self.total_deleted} emails")
 
+def show_preset_menu():
+    """Show available filter presets"""
+    print("🎯 SMART FILTERING PRESETS:")
+    print("=" * 50)
+    
+    presets = {
+        "1": ("default", "Default - 6 months old, preserve attachments"),
+        "2": ("newsletters", "Newsletter cleanup - 30 days, newsletter keywords"),  
+        "3": ("github_notifications", "GitHub notifications - 7 days old"),
+        "4": ("large_emails", "Large emails - 90 days, 10MB+ size"),
+        "5": ("social_media", "Social media - 14 days, FB/Twitter/LinkedIn"),
+        "6": ("promotional", "Promotional emails - 60 days, sale keywords")
+    }
+    
+    for key, (preset, desc) in presets.items():
+        print(f"   {key}. {desc}")
+    
+    print("   7. Custom filters (advanced)")
+    print("")
+    
+    choice = input("Choose filter preset (1-7) or press Enter for default: ").strip()
+    
+    if choice == "1" or choice == "":
+        return DEFAULT_FILTERS.copy()
+    elif choice in ["2", "3", "4", "5", "6"]:
+        preset_name = presets[choice][0]
+        return FILTER_PRESETS[preset_name].copy()
+    elif choice == "7":
+        return get_custom_filters()
+    else:
+        print("Invalid choice, using default filters")
+        return DEFAULT_FILTERS.copy()
+
+def get_custom_filters():
+    """Get custom filter configuration from user"""
+    print("\n🔧 CUSTOM FILTER CONFIGURATION:")
+    print("=" * 40)
+    
+    filters = DEFAULT_FILTERS.copy()
+    
+    # Age filter
+    age_input = input(f"Delete emails older than days (current: {filters['older_than_days']}): ").strip()
+    if age_input:
+        try:
+            filters['older_than_days'] = int(age_input)
+        except ValueError:
+            print("Invalid number, keeping current value")
+    
+    # Size filters
+    min_size = input("Minimum email size in MB (leave empty for no limit): ").strip()
+    if min_size:
+        try:
+            filters['min_size_mb'] = int(min_size)
+        except ValueError:
+            print("Invalid number, ignoring")
+    
+    max_size = input("Maximum email size in MB (leave empty for no limit): ").strip()
+    if max_size:
+        try:
+            filters['max_size_mb'] = int(max_size)
+        except ValueError:
+            print("Invalid number, ignoring")
+    
+    # Sender domains
+    domains = input("Sender domains to delete (comma-separated, e.g., 'newsletter.com,marketing.com'): ").strip()
+    if domains:
+        filters['sender_domains'] = [d.strip() for d in domains.split(',')]
+    
+    # Sender emails
+    emails = input("Specific sender emails to delete (comma-separated): ").strip()
+    if emails:
+        filters['sender_emails'] = [e.strip() for e in emails.split(',')]
+    
+    # Subject keywords
+    keywords = input("Subject keywords to match (comma-separated): ").strip()
+    if keywords:
+        filters['subject_keywords'] = [k.strip() for k in keywords.split(',')]
+    
+    print("\n✅ Custom filters configured!")
+    return filters
+
 async def main_async():
-    print("🚀 Gmail Bulk Delete - Async Maximum Performance")
-    print("⚡ Deleting emails with async/await optimization")
+    print("🚀 Gmail Bulk Delete - Smart Filtering + Async Performance")
+    print("⚡ Ultra-fast deletion with intelligent filtering")
     print()
     
+    # Show filter options
+    filters = show_preset_menu()
+    
     try:
-        deleter = AsyncGmailBulkDeleter()
+        deleter = AsyncGmailBulkDeleter(filters)
         await deleter.execute_deletion_async()
     except KeyboardInterrupt:
         print("\n\n❌ Operation cancelled by user")

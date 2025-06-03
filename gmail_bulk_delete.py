@@ -1,286 +1,471 @@
 #!/usr/bin/env python3
-"""
-Gmail Bulk Delete Script
-A secure script to bulk delete emails using Gmail API with various filters.
-"""
+"""High Performance Gmail Bulk Delete - Optimized for Maximum Speed"""
 
-import os
 import pickle
-import json
-from datetime import datetime, timedelta
-from typing import List, Dict, Optional
-from dataclasses import dataclass
-
-from google.auth.transport.requests import Request
-from google.oauth2.credentials import Credentials
-from google_auth_oauthlib.flow import InstalledAppFlow
+import time
+import asyncio
+import aiohttp
+import gc
+import psutil
+import os
+from datetime import datetime
 from googleapiclient.discovery import build
 from googleapiclient.errors import HttpError
+import threading
 
-# Gmail API scope for full access
-SCOPES = ['https://www.googleapis.com/auth/gmail.readonly', 'https://www.googleapis.com/auth/gmail.modify']
+# Configuration Constants - Optimized for Async/Await
+EMAILS_PER_CHUNK = 300  # Even larger chunks for async efficiency  
+MAX_CONCURRENT_TASKS = 5  # Async concurrent tasks
+EMAILS_PER_TASK = 60  # Emails per async task
+MAX_RETRY_ATTEMPTS = 2
+BACKOFF_BASE_DELAY = 0.05
+STANDARD_DELAY = 0.05
+ERROR_RECOVERY_DELAY = 0.5
+MAINTENANCE_INTERVAL = 10
+PERFORMANCE_CHECK_INTERVAL = 30
+PROGRESS_BAR_WIDTH = 40
 
-@dataclass
-class DeleteCriteria:
-    """Configuration for email deletion criteria"""
-    older_than_days: Optional[int] = None
-    from_addresses: Optional[List[str]] = None
-    subject_contains: Optional[List[str]] = None
-    labels: Optional[List[str]] = None
-    size_larger_than_mb: Optional[int] = None
-    exclude_important: bool = True
-    exclude_starred: bool = True
-    exclude_with_attachments: bool = False
-    dry_run: bool = True
-
-class GmailBulkDeleter:
-    def __init__(self, credentials_file: str = 'credentials.json'):
-        """Initialize Gmail API client"""
-        self.credentials_file = credentials_file
-        self.token_file = 'token.pickle'
+class AsyncGmailBulkDeleter:
+    def __init__(self):
+        self.total_deleted = 0
+        self.total_errors = 0
+        self.start_time = None
+        self.lock = asyncio.Lock()
+        self.rate_limit_counter = 0
+        self.process = psutil.Process(os.getpid())
+        self.batch_api_success = 0
+        self.batch_api_fallbacks = 0
+        
+        # Service connection pooling for async
         self.service = None
-        self._authenticate()
-    
-    def _authenticate(self):
-        """Authenticate with Gmail API"""
-        creds = None
+        self.credentials = None
+        self.connection_reuse_count = 0
+        self._load_credentials()
         
-        # Load existing token
-        if os.path.exists(self.token_file):
-            with open(self.token_file, 'rb') as token:
-                creds = pickle.load(token)
-        
-        # If credentials are invalid or don't exist, get new ones
-        if not creds or not creds.valid:
-            if creds and creds.expired and creds.refresh_token:
-                creds.refresh(Request())
-            else:
-                if not os.path.exists(self.credentials_file):
-                    raise FileNotFoundError(
-                        f"Credentials file '{self.credentials_file}' not found. "
-                        "Please download it from Google Cloud Console."
-                    )
-                
-                flow = InstalledAppFlow.from_client_secrets_file(
-                    self.credentials_file, SCOPES
-                )
-                creds = flow.run_local_server(port=0)
-            
-            # Save credentials for next run
-            with open(self.token_file, 'wb') as token:
-                pickle.dump(creds, token)
-        
-        self.service = build('gmail', 'v1', credentials=creds)
-        print("✅ Successfully authenticated with Gmail API")
-    
-    def _build_query(self, criteria: DeleteCriteria) -> str:
-        """Build Gmail search query from criteria"""
-        query_parts = []
-        
-        if criteria.older_than_days:
-            date = (datetime.now() - timedelta(days=criteria.older_than_days)).strftime('%Y/%m/%d')
-            query_parts.append(f'before:{date}')
-        
-        if criteria.from_addresses:
-            from_query = ' OR '.join([f'from:{addr}' for addr in criteria.from_addresses])
-            query_parts.append(f'({from_query})')
-        
-        if criteria.subject_contains:
-            subject_query = ' OR '.join([f'subject:"{text}"' for text in criteria.subject_contains])
-            query_parts.append(f'({subject_query})')
-        
-        if criteria.labels:
-            for label in criteria.labels:
-                query_parts.append(f'label:{label}')
-        
-        if criteria.size_larger_than_mb:
-            size_bytes = criteria.size_larger_than_mb * 1024 * 1024
-            query_parts.append(f'size:{size_bytes}')
-        
-        if criteria.exclude_important:
-            query_parts.append('-is:important')
-        
-        if criteria.exclude_starred:
-            query_parts.append('-is:starred')
-        
-        # Always exclude trash and spam
-        query_parts.extend(['-in:trash', '-in:spam'])
-        
-        # Exclude emails with attachments if specified
-        if criteria.exclude_with_attachments:
-            query_parts.append('-has:attachment')
-        
-        return ' '.join(query_parts)
-    
-    def search_emails(self, criteria: DeleteCriteria) -> List[Dict]:
-        """Search for emails matching criteria"""
-        query = self._build_query(criteria)
-        print(f"🔍 Search query: {query}")
-        
+    def get_memory_usage(self):
+        """Get current memory usage in MB"""
         try:
-            # Get ALL messages with pagination
-            messages = []
-            page_token = None
-            
-            while True:
-                if page_token:
-                    results = self.service.users().messages().list(
-                        userId='me', q=query, pageToken=page_token
-                    ).execute()
-                else:
-                    results = self.service.users().messages().list(
-                        userId='me', q=query
-                    ).execute()
-                
-                batch_messages = results.get('messages', [])
-                messages.extend(batch_messages)
-                
-                page_token = results.get('nextPageToken')
-                if not page_token:
-                    break
-                    
-                print(f"📧 Found {len(messages)} emails so far...")
-            
-            total_count = len(messages)
-            
-            if total_count == 0:
-                print("✅ No emails found matching criteria")
-                return []
-            
-            print(f"📧 Found {total_count} emails matching criteria")
-            
-            # Get detailed info for first few emails as preview
-            preview_emails = []
-            for i, message in enumerate(messages[:5]):  # Preview first 5
-                try:
-                    email_data = self.service.users().messages().get(
-                        userId='me', id=message['id'], format='metadata',
-                        metadataHeaders=['From', 'Subject', 'Date']
-                    ).execute()
-                    
-                    headers = {h['name']: h['value'] for h in email_data['payload'].get('headers', [])}
-                    preview_emails.append({
-                        'id': message['id'],
-                        'from': headers.get('From', 'Unknown'),
-                        'subject': headers.get('Subject', 'No Subject'),
-                        'date': headers.get('Date', 'Unknown')
-                    })
-                except HttpError as e:
-                    print(f"⚠️  Error getting email details: {e}")
-            
-            if preview_emails:
-                print("\n📋 Preview of emails to be deleted:")
-                for email in preview_emails:
-                    print(f"  • From: {email['from']}")
-                    print(f"    Subject: {email['subject']}")
-                    print(f"    Date: {email['date']}")
-                    print()
-                
-                if total_count > 5:
-                    print(f"... and {total_count - 5} more emails")
-            
-            return messages
-            
-        except HttpError as error:
-            print(f"❌ Error searching emails: {error}")
-            return []
-    
-    def delete_emails(self, message_ids: List[str], dry_run: bool = True) -> int:
-        """Delete emails by ID"""
-        if not message_ids:
+            memory_info = self.process.memory_info()
+            return memory_info.rss / 1024 / 1024  # Convert to MB
+        except:
             return 0
-        
-        total_count = len(message_ids)
-        
-        if dry_run:
-            print(f"🧪 DRY RUN: Would delete {total_count} emails")
-            return 0
-        
-        print(f"🗑️  Deleting {total_count} emails...")
-        
-        # Confirm deletion
-        response = input(f"\n⚠️  Are you sure you want to delete {total_count} emails? (yes/no): ")
-        if response.lower() != 'yes':
-            print("❌ Deletion cancelled")
-            return 0
-        
-        deleted_count = 0
-        batch_size = 100  # Gmail API batch limit
-        
-        try:
-            for i in range(0, len(message_ids), batch_size):
-                batch = message_ids[i:i + batch_size]
-                
-                # Move to trash instead of permanent deletion (safer and works with current permissions)
-                for message_id in batch:
-                    self.service.users().messages().trash(
-                        userId='me', id=message_id
-                    ).execute()
-                
-                deleted_count += len(batch)
-                print(f"✅ Deleted {deleted_count}/{total_count} emails")
-            
-            print(f"🎉 Successfully deleted {deleted_count} emails!")
-            return deleted_count
-            
-        except HttpError as error:
-            print(f"❌ Error deleting emails: {error}")
-            return deleted_count
-    
-    def bulk_delete(self, criteria: DeleteCriteria) -> int:
-        """Main method to search and delete emails"""
-        print("🚀 Starting Gmail bulk delete operation...")
-        print(f"📊 Dry run mode: {'ON' if criteria.dry_run else 'OFF'}")
-        
-        # Search for emails
-        messages = self.search_emails(criteria)
-        
-        if not messages:
-            return 0
-        
-        # Extract message IDs
-        message_ids = [msg['id'] for msg in messages]
-        
-        # Delete emails
-        return self.delete_emails(message_ids, criteria.dry_run)
 
-def load_config(config_file: str = 'delete_config.json') -> DeleteCriteria:
-    """Load deletion criteria from config file"""
-    if not os.path.exists(config_file):
-        print(f"⚠️  Config file '{config_file}' not found. Using default criteria.")
-        return DeleteCriteria()
+    def _load_credentials(self):
+        """Load credentials once for connection pooling"""
+        with open('token.pickle', 'rb') as token:
+            self.credentials = pickle.load(token)
+        
+    async def get_service(self):
+        """Get Gmail service with async optimization"""
+        if self.service is None:
+            # Create service once for async use
+            self.service = build('gmail', 'v1', 
+                               credentials=self.credentials, 
+                               cache_discovery=False)
+        else:
+            self.connection_reuse_count += 1
+            
+        return self.service
+
+    async def delete_email_batch_async(self, message_ids, task_id):
+        """Delete a batch of emails using async batch API for maximum performance"""
+        service = await self.get_service()
+        
+        # Try batch API first (much faster)
+        success = await self._delete_batch_api_async(service, message_ids)
+        if success:
+            deleted_count = len(message_ids)
+            error_count = 0
+            async with self.lock:
+                self.batch_api_success += 1
+        else:
+            # Fallback to individual deletion if batch fails
+            deleted_count, error_count = await self._delete_individual_fallback_async(service, message_ids)
+            async with self.lock:
+                self.batch_api_fallbacks += 1
+                    
+        await self._update_counters_async(deleted_count, error_count)
+        return deleted_count, error_count
+
+    async def _delete_batch_api_async(self, service, message_ids):
+        """Delete emails using Gmail's batch API with async"""
+        MAX_RETRIES = MAX_RETRY_ATTEMPTS
+        
+        for attempt in range(MAX_RETRIES):
+            try:
+                # Use batchModify to add TRASH label to all emails at once
+                service.users().messages().batchModify(
+                    userId='me',
+                    body={
+                        'ids': message_ids,
+                        'addLabelIds': ['TRASH']
+                    }
+                ).execute()
+                return True
+            except HttpError as e:
+                if self._is_rate_limit_error(e):
+                    await self._handle_rate_limit_async()
+                    if attempt < MAX_RETRIES - 1:
+                        delay = self._calculate_backoff_delay(attempt)
+                        await asyncio.sleep(delay)
+                        continue
+                # If not rate limit, fall back to individual deletion
+                return False
+            except Exception:
+                if attempt < MAX_RETRIES - 1:
+                    await asyncio.sleep(0.1)
+                    continue
+                return False
+        return False
+
+    async def _delete_individual_fallback_async(self, service, message_ids):
+        """Fallback to individual email deletion if batch API fails"""
+        deleted_count = 0
+        error_count = 0
+        
+        for message_id in message_ids:
+            result = await self._delete_single_email_async(service, message_id)
+            if result:
+                deleted_count += 1
+            else:
+                error_count += 1
+                
+        return deleted_count, error_count
+
+    async def _delete_single_email_async(self, service, message_id):
+        """Delete a single email with async retry logic"""
+        MAX_RETRIES = MAX_RETRY_ATTEMPTS
+        
+        for attempt in range(MAX_RETRIES):
+            try:
+                service.users().messages().trash(userId='me', id=message_id).execute()
+                return True
+            except HttpError as e:
+                if self._is_rate_limit_error(e):
+                    await self._handle_rate_limit_async()
+                    if attempt < MAX_RETRIES - 1:
+                        delay = self._calculate_backoff_delay(attempt)
+                        await asyncio.sleep(delay)
+                        continue
+                return False
+            except Exception:
+                if attempt < MAX_RETRIES - 1:
+                    await asyncio.sleep(0.02)
+                    continue
+                return False
+        return False
+
+    def _is_rate_limit_error(self, error):
+        """Check if error is rate limit related"""
+        return "429" in str(error) or "403" in str(error)
+
+    async def _handle_rate_limit_async(self):
+        """Handle rate limit encounter with async"""
+        async with self.lock:
+            self.rate_limit_counter += 1
+
+    def _calculate_backoff_delay(self, attempt):
+        """Calculate progressive backoff delay"""
+        return BACKOFF_BASE_DELAY * (attempt + 1) * min(self.rate_limit_counter, 5)
+
+    async def _update_counters_async(self, deleted_count, error_count):
+        """Update global counters with async lock"""
+        async with self.lock:
+            self.total_deleted += deleted_count
+            self.total_errors += error_count
+
+    async def execute_deletion_async(self):
+        print("🚀 ASYNC HIGH PERFORMANCE GMAIL DELETION")
+        print("⚡ Optimized with async/await for maximum speed")
+        print("💾 Memory-optimized for minimal RAM usage")
+        print("=" * 60)
+        
+        service = await self.get_service()
+        query = 'before:2024/12/05 -is:important -is:starred -has:attachment -in:trash -in:spam'
+        
+        initial_estimate = await self._get_initial_email_count_async(service, query)
+        
+        print("\n⚡ MAXIMUM PERFORMANCE MODE:")
+        print("   🚀 Batch API optimization enabled")
+        print("   ⚡ Async/await concurrent processing")
+        print("   🧵 5 concurrent async tasks")
+        print("   📦 300 emails per chunk, 60 per task")
+        print("   💾 Memory optimized")
+        print("")
+        
+        self.start_time = datetime.now()
+        batch_number = 1
+        starting_total = initial_estimate
+        
+        # Maximum performance settings - async optimized
+        CHUNK_SIZE = EMAILS_PER_CHUNK
+        MAX_TASKS = MAX_CONCURRENT_TASKS  
+        TASK_BATCH_SIZE = EMAILS_PER_TASK
+        
+        print(f"⚙️  Settings: {CHUNK_SIZE} emails/chunk, {MAX_TASKS} async tasks, {TASK_BATCH_SIZE} emails/task")
+        print("=" * 60)
+        
+        last_performance_check = time.time()
+        performance_samples = []
+        
+        while True:
+            message_ids = await self._process_email_batch_async(service, query, CHUNK_SIZE)
+            if not message_ids:
+                break
+                
+            success = await self._process_batch_async(message_ids, batch_number, TASK_BATCH_SIZE, MAX_TASKS, performance_samples, starting_total, last_performance_check)
+            
+            batch_number += 1
+            await self._perform_maintenance_async(batch_number)
+            await self._apply_rate_limiting_async()
+
+    async def _process_batch_async(self, message_ids, batch_number, task_batch_size, max_tasks, performance_samples, starting_total, last_performance_check):
+        """Process a single batch of emails with async tasks"""
+        try:
+            chunk_start_time = time.time()
+            
+            print(f"\n📦 BATCH {batch_number}")
+            print(f"   📧 Processing {len(message_ids)} emails with {max_tasks} async tasks...")
+            
+            task_batches = self._create_async_batches(message_ids, task_batch_size)
+            await self._execute_async_deletion(task_batches, max_tasks)
+            
+            chunk_time = time.time() - chunk_start_time
+            self._print_batch_stats(batch_number, len(message_ids), chunk_time, performance_samples)
+            
+            if self.rate_limit_counter > 0:
+                print(f"   ⚠️  Rate limits hit: {self.rate_limit_counter} times")
+                
+            self._print_progress_bar(starting_total)
+            self._print_periodic_status(last_performance_check)
+            
+            return True
+        except Exception as e:
+            print(f"\n💥 Error in batch {batch_number}: {e}")
+            await asyncio.sleep(0.5)
+            return False
+
+    async def _perform_maintenance_async(self, batch_number):
+        """Perform periodic maintenance with async"""
+        if batch_number % 10 == 0:
+            gc.collect()
+
+    async def _apply_rate_limiting_async(self):
+        """Apply rate limiting based on current conditions with async"""
+        if self.rate_limit_counter > 0:
+            delay = min(0.1 * (self.rate_limit_counter / 10), 1.0)
+            await asyncio.sleep(delay)
+        else:
+            await asyncio.sleep(0.05)
+
+    def _print_periodic_status(self, last_check_time):
+        """Print periodic performance status"""
+        current_time = time.time()
+        if current_time - last_check_time > 30:
+            total_time = current_time - self.start_time.timestamp()
+            overall_rate = self.total_deleted / total_time if total_time > 0 else 0
+            print(f"   📈 Performance: {overall_rate:.1f} emails/sec average")
+            return current_time
+        return last_check_time
+        
+        # Final results with extreme detail
+        end_time = datetime.now()
+        total_duration = (end_time - self.start_time).total_seconds()
+        final_rate = self.total_deleted / total_duration if total_duration > 0 else 0
+        
+        print("\n" + "=" * 60)
+        print("🎉 HIGH PERFORMANCE DELETION COMPLETE!")
+        print("=" * 60)
+        print(f"📊 RESULTS:")
+        print(f"   🗑️  Total deleted: {self.total_deleted}")
+        print(f"   ❌ Total errors: {self.total_errors}")
+        print(f"   ⏱️  Duration: {total_duration:.1f} seconds")
+        print(f"   🚀 Average rate: {final_rate:.1f} emails/second")
+        print(f"   ✅ Success rate: {(self.total_deleted/(self.total_deleted + self.total_errors)*100):.1f}%")
+        print(f"   🚀 Batch API usage: {self.batch_api_success} successful, {self.batch_api_fallbacks} fallbacks")
+        print(f"   🔗 Connection reuses: {self.connection_reuse_count}")
+        if self.batch_api_success + self.batch_api_fallbacks > 0:
+            batch_efficiency = (self.batch_api_success / (self.batch_api_success + self.batch_api_fallbacks)) * 100
+            print(f"   📈 Batch API efficiency: {batch_efficiency:.1f}%")
+        if self.connection_reuse_count > 1:
+            print(f"   🔗 Connection pooling: ✅ Active ({self.connection_reuse_count} reuses)")
+        
+        return self.total_deleted
+
+    async def _get_initial_email_count_async(self, service, query):
+        """Get initial count of emails to delete with async"""
+        print("📊 Analyzing emails...")
+        try:
+            result = service.users().messages().list(userId='me', q=query, maxResults=1).execute()
+            count = result.get('resultSizeEstimate', 0)
+            print(f"📧 Initial estimate: {count} emails")
+            return count
+        except:
+            return 0
+
+    async def _process_email_batch_async(self, service, query, chunk_size):
+        """Process a single batch of emails with async"""
+        try:
+            results = service.users().messages().list(
+                userId='me', q=query, maxResults=chunk_size
+            ).execute()
+            
+            messages = results.get('messages', [])
+            if not messages:
+                return None
+                
+            message_ids = [msg['id'] for msg in messages]
+            del messages  # Free memory immediately
+            return message_ids
+        except Exception as e:
+            print(f"\n💥 Error getting emails: {e}")
+            return None
+
+    def _create_async_batches(self, message_ids, batch_size):
+        """Split message IDs into async task batches"""
+        return [
+            message_ids[i:i + batch_size] 
+            for i in range(0, len(message_ids), batch_size)
+        ]
+
+    async def _execute_async_deletion(self, task_batches, max_tasks):
+        """Execute deletion across multiple async tasks"""
+        # Create tasks for concurrent execution
+        tasks = []
+        for i, batch in enumerate(task_batches):
+            task = asyncio.create_task(self.delete_email_batch_async(batch, i))
+            tasks.append(task)
+        
+        # Execute tasks concurrently with semaphore to limit concurrency
+        semaphore = asyncio.Semaphore(max_tasks)
+        
+        async def bounded_task(task, task_id):
+            async with semaphore:
+                return await task
+        
+        # Run all tasks with concurrency control
+        bounded_tasks = [bounded_task(task, i) for i, task in enumerate(tasks)]
+        results = await asyncio.gather(*bounded_tasks, return_exceptions=True)
+        
+        # Print results
+        for i, result in enumerate(results):
+            if isinstance(result, Exception):
+                print(f"   💥 Task {i} crashed: {result}")
+            else:
+                deleted, errors = result
+                if errors > 0:
+                    print(f"   🔧 Task {i}: {deleted} ✅, {errors} ❌")
+                else:
+                    print(f"   🔧 Task {i}: {deleted} ✅")
+
+    def _get_initial_email_count(self, service, query):
+        """Get initial count of emails to delete"""
+        print("📊 Analyzing emails...")
+        try:
+            result = service.users().messages().list(userId='me', q=query, maxResults=1).execute()
+            count = result.get('resultSizeEstimate', 0)
+            print(f"📧 Initial estimate: {count} emails")
+            return count
+        except:
+            return 0
+
+    def _process_email_batch(self, service, query, chunk_size):
+        """Process a single batch of emails"""
+        try:
+            results = service.users().messages().list(
+                userId='me', q=query, maxResults=chunk_size
+            ).execute()
+            
+            messages = results.get('messages', [])
+            if not messages:
+                return None
+                
+            message_ids = [msg['id'] for msg in messages]
+            del messages  # Free memory immediately
+            return message_ids
+        except Exception as e:
+            print(f"\n💥 Error getting emails: {e}")
+            return None
+
+    def _create_thread_batches(self, message_ids, batch_size):
+        """Split message IDs into thread batches"""
+        return [
+            message_ids[i:i + batch_size] 
+            for i in range(0, len(message_ids), batch_size)
+        ]
+
+    def _execute_parallel_deletion(self, thread_batches, max_workers):
+        """Execute deletion across multiple threads"""
+        with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
+            future_to_thread = {
+                executor.submit(self.delete_email_batch, batch, i): i 
+                for i, batch in enumerate(thread_batches)
+            }
+            
+            for future in concurrent.futures.as_completed(future_to_thread):
+                thread_id = future_to_thread[future]
+                try:
+                    deleted, errors = future.result()
+                    self._print_thread_result(thread_id, deleted, errors)
+                except Exception as e:
+                    print(f"   💥 Thread {thread_id} crashed: {e}")
+        
+        del thread_batches, future_to_thread
+
+    def _print_thread_result(self, thread_id, deleted, errors):
+        """Print result for a single thread"""
+        if errors > 0:
+            print(f"   🧵 Thread {thread_id}: {deleted} ✅, {errors} ❌")
+        else:
+            print(f"   🧵 Thread {thread_id}: {deleted} ✅")
+
+    def _print_batch_stats(self, batch_num, email_count, chunk_time, performance_samples):
+        """Print statistics for completed batch"""
+        total_time = time.time() - self.start_time.timestamp()
+        current_rate = email_count / chunk_time if chunk_time > 0 else 0
+        overall_rate = self.total_deleted / total_time if total_time > 0 else 0
+        
+        performance_samples.append(current_rate)
+        if len(performance_samples) > 10:
+            performance_samples.pop(0)
+            
+        avg_recent_rate = sum(performance_samples) / len(performance_samples)
+        
+        print(f"   ⚡ Batch complete: {email_count} emails in {chunk_time:.1f}s")
+        print(f"   🔥 Batch rate: {current_rate:.1f} emails/second")
+        print(f"   📊 Overall rate: {overall_rate:.1f} emails/second")
+        print(f"   📈 Recent avg: {avg_recent_rate:.1f} emails/second")
+        print(f"   🎯 Total deleted: {self.total_deleted}")
+        print(f"   💾 Memory: {self.get_memory_usage():.1f} MB")
+
+    def _print_progress_bar(self, starting_total):
+        """Print progress bar based on deletions"""
+        if starting_total > 0:
+            progress = min((self.total_deleted / starting_total) * 100, 100)
+            bar_length = PROGRESS_BAR_WIDTH
+            filled = int(bar_length * progress / 100)
+            bar = "█" * filled + "░" * (bar_length - filled)
+            estimated_remaining = max(0, starting_total - self.total_deleted)
+            print(f"   📊 Progress: [{bar}] {progress:.1f}% (~{estimated_remaining} remaining)")
+        else:
+            print(f"   📊 Processed: {self.total_deleted} emails")
+
+async def main_async():
+    print("🚀 Gmail Bulk Delete - Async Maximum Performance")
+    print("⚡ Deleting emails with async/await optimization")
+    print()
     
     try:
-        with open(config_file, 'r') as f:
-            config_data = json.load(f)
-        
-        return DeleteCriteria(**config_data)
+        deleter = AsyncGmailBulkDeleter()
+        await deleter.execute_deletion_async()
+    except KeyboardInterrupt:
+        print("\n\n❌ Operation cancelled by user")
     except Exception as e:
-        print(f"❌ Error loading config: {e}")
-        print("Using default criteria.")
-        return DeleteCriteria()
+        print(f"\n\n💥 Error: {e}")
 
 def main():
-    """Main execution function"""
-    try:
-        # Load configuration
-        criteria = load_config()
-        
-        # Initialize deleter
-        deleter = GmailBulkDeleter()
-        
-        # Perform bulk delete
-        deleted_count = deleter.bulk_delete(criteria)
-        
-        if deleted_count > 0:
-            print(f"\n🎯 Final result: {deleted_count} emails deleted")
-        else:
-            print("\n💡 No emails were deleted")
-    
-    except KeyboardInterrupt:
-        print("\n❌ Operation cancelled by user")
-    except Exception as e:
-        print(f"\n💥 Unexpected error: {e}")
+    """Main entry point that runs the async function"""
+    asyncio.run(main_async())
 
 if __name__ == "__main__":
     main()

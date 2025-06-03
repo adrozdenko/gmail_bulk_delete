@@ -1,0 +1,56 @@
+{
+  "keep_attachments_6months": {
+    "description": "Delete emails older than 6 months, keep attachments",
+    "criteria": {
+      "older_than_days": 180,
+      "exclude_important": true,
+      "exclude_starred": true,
+      "exclude_with_attachments": true
+    },
+    "dry_run": true
+  },
+  "newsletter_cleanup": {
+    "description": "Clean up newsletters and promotions",
+    "criteria": {
+      "older_than_days": 30,
+      "subject_contains": ["Newsletter", "Unsubscribe", "Promotion"],
+      "labels": ["promotions"],
+      "exclude_important": true,
+      "exclude_starred": true
+    },
+    "dry_run": true
+  },
+  "large_emails_cleanup": {
+    "description": "Remove large emails older than 3 months",
+    "criteria": {
+      "older_than_days": 90,
+      "size_larger_than_mb": 10,
+      "exclude_important": true,
+      "exclude_starred": true
+    },
+    "dry_run": true
+  },
+  "social_cleanup": {
+    "description": "Clean up social media notifications",
+    "criteria": {
+      "older_than_days": 60,
+      "labels": ["social"],
+      "exclude_important": true,
+      "exclude_starred": true
+    },
+    "dry_run": true
+  },
+  "custom_sender_cleanup": {
+    "description": "Clean up emails from specific senders",
+    "criteria": {
+      "older_than_days": 30,
+      "from_addresses": [
+        "noreply@marketing-company.com",
+        "newsletter@example.com"
+      ],
+      "exclude_important": true,
+      "exclude_starred": true
+    },
+    "dry_run": true
+  }
+}

@@ -1,0 +1,7 @@
+{
+  "older_than_days": 180,
+  "exclude_with_attachments": true,
+  "exclude_important": true,
+  "exclude_starred": true,
+  "dry_run": true
+}

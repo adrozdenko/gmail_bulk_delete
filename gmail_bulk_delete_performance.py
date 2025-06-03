@@ -5,6 +5,9 @@ import pickle
 import time
 import concurrent.futures
 import threading
+import gc
+import psutil
+import os
 from datetime import datetime
 from googleapiclient.discovery import build
 from googleapiclient.errors import HttpError
@@ -16,12 +19,22 @@ class HighPerformanceDeleter:
         self.start_time = None
         self.lock = threading.Lock()
         self.rate_limit_counter = 0
+        self.process = psutil.Process(os.getpid())
+        
+    def get_memory_usage(self):
+        """Get current memory usage in MB"""
+        try:
+            memory_info = self.process.memory_info()
+            return memory_info.rss / 1024 / 1024  # Convert to MB
+        except:
+            return 0
         
     def load_service(self):
-        """Load Gmail service for this thread"""
+        """Load Gmail service for this thread with memory optimization"""
         with open('token.pickle', 'rb') as token:
             creds = pickle.load(token)
-        return build('gmail', 'v1', credentials=creds)
+        # Use cache_discovery=False to reduce memory usage
+        return build('gmail', 'v1', credentials=creds, cache_discovery=False)
 
     def delete_email_batch_aggressive(self, message_ids, thread_id):
         """Delete a batch of emails with aggressive optimization"""
@@ -65,19 +78,20 @@ class HighPerformanceDeleter:
     def high_performance_delete(self):
         print("🚀 HIGH PERFORMANCE GMAIL DELETION")
         print("⚡ Optimized for maximum speed and efficiency")
+        print("💾 Memory-optimized for minimal RAM usage")
         print("=" * 60)
         
         service = self.load_service()
         query = 'before:2024/12/05 -is:important -is:starred -has:attachment -in:trash -in:spam'
         
-        # Get total count
+        # Get initial count
         print("📊 Analyzing emails...")
         try:
             count_result = service.users().messages().list(userId='me', q=query, maxResults=1).execute()
-            estimated_total = count_result.get('resultSizeEstimate', 0)
-            print(f"📧 Estimated emails to process: {estimated_total}")
+            initial_estimate = count_result.get('resultSizeEstimate', 0)
+            print(f"📧 Initial estimate: {initial_estimate} emails")
         except:
-            estimated_total = 0
+            initial_estimate = 0
         
         print("\n⚡ HIGH PERFORMANCE OPTIMIZATIONS:")
         print("   🧵 Parallel processing (5 threads)")
@@ -86,10 +100,13 @@ class HighPerformanceDeleter:
         print("   ⏱️  Minimal delays for maximum speed")
         print("   🔄 Smart rate limit handling")
         print("   📈 Real-time performance monitoring")
+        print("   💾 Memory optimization (garbage collection, cache_discovery=False)")
+        print("   🔧 Efficient data structures and cleanup")
         print("")
         
         self.start_time = datetime.now()
         batch_number = 1
+        starting_total = initial_estimate
         
         # EXTREME Performance settings
         CHUNK_SIZE = 100  # Maximum chunk size
@@ -113,16 +130,21 @@ class HighPerformanceDeleter:
                 if not messages:
                     break
                 
+                # Extract only message IDs to minimize memory usage
                 message_ids = [msg['id'] for msg in messages]
                 chunk_start_time = time.time()
+                
+                # Clear messages list to free memory immediately
+                del messages
                 
                 print(f"\n📦 BATCH {batch_number}")
                 print(f"   📧 Processing {len(message_ids)} emails with {MAX_WORKERS} threads...")
                 
-                # Split emails into thread batches
-                thread_batches = []
-                for i in range(0, len(message_ids), THREAD_BATCH_SIZE):
-                    thread_batches.append(message_ids[i:i + THREAD_BATCH_SIZE])
+                # Split emails into thread batches efficiently
+                thread_batches = [
+                    message_ids[i:i + THREAD_BATCH_SIZE] 
+                    for i in range(0, len(message_ids), THREAD_BATCH_SIZE)
+                ]
                 
                 # Process in parallel with maximum aggression
                 with concurrent.futures.ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
@@ -145,6 +167,9 @@ class HighPerformanceDeleter:
                         except Exception as e:
                             print(f"   💥 Thread {thread_id} crashed: {e}")
                 
+                # Clear thread batches and futures to free memory
+                del thread_batches, future_to_thread
+                
                 # Calculate advanced performance metrics
                 chunk_time = time.time() - chunk_start_time
                 total_time = time.time() - self.start_time.timestamp()
@@ -164,27 +189,44 @@ class HighPerformanceDeleter:
                 print(f"   📈 Recent avg: {avg_recent_rate:.1f} emails/second")
                 print(f"   🎯 Total deleted: {self.total_deleted}")
                 
+                # Memory usage monitoring
+                current_memory = self.get_memory_usage()
+                print(f"   💾 Memory: {current_memory:.1f} MB")
+                
                 # Rate limit monitoring
                 if self.rate_limit_counter > 0:
                     print(f"   ⚠️  Rate limits hit: {self.rate_limit_counter} times")
                 
-                # Dynamic progress bar
-                if estimated_total > 0:
-                    progress = min((self.total_deleted / estimated_total) * 100, 100)
-                    bar_length = 50
+                # Progress bar based on deletions vs initial estimate
+                if starting_total > 0:
+                    progress = min((self.total_deleted / starting_total) * 100, 100)
+                    bar_length = 40
                     filled = int(bar_length * progress / 100)
                     bar = "█" * filled + "░" * (bar_length - filled)
-                    print(f"   📊 Progress: [{bar}] {progress:.1f}%")
+                    estimated_remaining = max(0, starting_total - self.total_deleted)
+                    print(f"   📊 Progress: [{bar}] {progress:.1f}% (~{estimated_remaining} remaining)")
+                else:
+                    print(f"   📊 Processed: {self.total_deleted} emails")
                 
-                # Performance monitoring and adaptation
+                # Performance monitoring and adaptation  
                 current_time = time.time()
                 if current_time - last_performance_check > 30:  # Every 30 seconds
-                    print(f"   📈 Performance trending: {overall_rate:.1f} emails/sec average")
-                    if self.rate_limit_counter > 10:
-                        print(f"   ⚠️  High rate limit pressure detected - consider reducing threads")
+                    try:
+                        # Update remaining count for trending
+                        trend_check = service.users().messages().list(userId='me', q=query, maxResults=1).execute()
+                        current_remaining = trend_check.get('resultSizeEstimate', 0)
+                        print(f"   📈 Performance trending: {overall_rate:.1f} emails/sec average, {current_remaining} remaining")
+                        if self.rate_limit_counter > 10:
+                            print(f"   ⚠️  High rate limit pressure detected - consider reducing threads")
+                    except:
+                        print(f"   📈 Performance trending: {overall_rate:.1f} emails/sec average")
                     last_performance_check = current_time
                 
                 batch_number += 1
+                
+                # Memory cleanup every 10 batches
+                if batch_number % 10 == 0:
+                    gc.collect()  # Force garbage collection
                 
                 # Minimal delay - only if we're hitting rate limits
                 if self.rate_limit_counter > 0:

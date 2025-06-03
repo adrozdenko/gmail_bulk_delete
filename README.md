@@ -48,24 +48,37 @@ setup.bat         # Windows
 - **[Full instructions in USER_GUIDE.md](USER_GUIDE.md)**
 
 ### 3. Start Cleaning
+
+**🎯 JSON Configuration System (Recommended)**
 ```bash
-# Run the ultra-fast async version with smart filtering
+# Run with JSON-based rule configuration
 source venv/bin/activate
+python gmail_bulk_delete_config.py
+
+# Select from built-in presets or load custom configs:
+# 1. default: 6 months, preserve attachments
+# 2. newsletters: 30 days, marketing keywords  
+# 3. github_notifications: 7 days old
+# 4. large_emails: 90 days, 10MB+ size
+# 5. social_media: 14 days, FB/Twitter/LinkedIn
+# 6. promotional: 60 days, sale keywords
+# 7. job_alerts: 14 days, recruitment emails
+# 8. Custom rules (step-by-step builder)
+# 9. Load from file (my_custom_config.json)
+```
+
+**⚡ Clean Code Version**
+```bash
+# Run the clean architecture version
 python gmail_bulk_delete_refactored.py
+```
 
-# Choose from smart filtering presets:
-# 1. Default - 6 months, preserve attachments
-# 2. Newsletters - 30 days, newsletter keywords  
-# 3. GitHub notifications - 7 days old
-# 4. Large emails - 90 days, 10MB+ size
-# 5. Social media - 14 days, FB/Twitter/LinkedIn
-# 6. Promotional - 60 days, sale keywords
-# 7. Custom filters (advanced)
-
+**📈 Performance Results**
+```bash
 # Watch the performance!
 # ⚡ Processes 83.7 emails/second
 # 🚀 Uses batch API + async optimization  
-# 🎯 Smart filtering with presets
+# 🎯 Rule-based smart filtering
 # 📊 Real-time progress monitoring
 ```
 
@@ -101,44 +114,76 @@ python gmail_bulk_delete_refactored.py
 - **Batch processing** - handles large volumes safely
 - **Smart exclusions** - multiple protection layers
 
-## 🎯 Smart Filtering Configuration
+## 🎯 JSON Configuration System
 
-### **Built-in Presets (Ready to Use)**
-- **📰 Newsletters**: 30 days old, marketing keywords
-- **💻 GitHub Notifications**: 7 days old, development alerts  
-- **📏 Large Emails**: 90 days old, 10MB+ size
-- **📱 Social Media**: 14 days old, FB/Twitter/LinkedIn
-- **🛍️ Promotional**: 60 days old, sale keywords
-- **🔧 Custom**: Configure your own filters
-
-### **Advanced Configuration**
-Edit `smart_filters.json` for custom presets:
+### **🚀 Rule-Based Configuration**
+The tool now uses a powerful JSON configuration system that supports complex filtering rules:
 
 ```json
 {
-  "custom_cleanup": {
-    "older_than_days": 90,
-    "sender_domains": ["newsletter.com", "marketing.com"],
-    "subject_keywords": ["unsubscribe", "promotion"],
-    "min_size_mb": 5,
-    "exclude_attachments": true,
-    "exclude_important": true
+  "rules": [
+    {"type": "age", "days": 180},
+    {"type": "sender", "domains": ["newsletter.com"]},
+    {"type": "size", "min_mb": 10},
+    {"type": "subject", "keywords": ["unsubscribe", "promotion"]},
+    {"type": "exclude", "category": "attachments"}
+  ]
+}
+```
+
+### **📋 Built-in Presets**
+- **🏠 default**: 6 months old, preserve attachments
+- **📰 newsletters**: 30 days, marketing keywords
+- **💻 github_notifications**: 7 days, development alerts  
+- **📏 large_emails**: 90 days, 10MB+ size
+- **📱 social_media**: 14 days, social platforms
+- **🛍️ promotional**: 60 days, sale keywords
+- **💼 job_alerts**: 14 days, recruitment emails
+
+### **🔧 Custom Configuration**
+Create your own `my_config.json`:
+
+```json
+{
+  "presets": {
+    "marketing_cleanup": {
+      "description": "Clean up marketing emails",
+      "rules": [
+        {"type": "age", "days": 60},
+        {"type": "sender", "domains": ["newsletter.com", "marketing.com"]},
+        {"type": "subject", "keywords": ["sale", "discount", "unsubscribe"]},
+        {"type": "exclude", "category": "attachments"},
+        {"type": "exclude", "category": "important"}
+      ]
+    }
   }
 }
 ```
+
+### **📖 Rule Types**
+- **age**: Filter by email age (`{"type": "age", "days": 180}`)
+- **sender**: Filter by domains/emails (`{"type": "sender", "domains": ["example.com"]}`)
+- **size**: Filter by email size (`{"type": "size", "min_mb": 10}`)
+- **subject**: Filter by keywords (`{"type": "subject", "keywords": ["newsletter"]}`)
+- **exclude**: Exclude categories (`{"type": "exclude", "category": "attachments"}`)
 
 ## ⚡ Performance Modes
 
 ### 🚀 Maximum Performance (Recommended)
 ```bash
-# Clean code refactored version with smart filtering
+# JSON configuration system (newest, most flexible)
+python gmail_bulk_delete_config.py
+
+# Clean code refactored version 
 python gmail_bulk_delete_refactored.py
 
 # Original monolithic version (still available)
 python gmail_bulk_delete.py
 ```
+
+**All versions deliver:**
 - **83.7 emails/second** with async/await optimization
-- **Smart filtering presets** for targeted cleanup
+- **Rule-based smart filtering** for targeted cleanup
 - **Clean code architecture** following Uncle Bob's principles
 - **Batch API** for optimal efficiency  
 - **Service connection pooling**
